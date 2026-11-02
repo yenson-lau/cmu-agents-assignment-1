@@ -30,6 +30,10 @@ make doctor   # checks submodules, Modal auth and the model endpoint without bil
 - Do not modify `tests/`, `tasks/` or `chess_app/`.
 - Leave code inside `### Do not modify this section ###` blocks unchanged (e.g. in `src/assignment/agent/base.py`).
 
+## How to help me
+
+- When an implementation depends on a public API or another transferable specification (e.g. the OpenAI tool-calling format, the Agent Skills protocol, YAML frontmatter, UCI/FEN), point me to the source first. Cite public sources (official docs, specs, API references) before source code such as the installed SDK in `.venv`; use source code as a secondary reference, or when no public doc covers the point. Name the specific page or file and what to look for in it. Don't give the answer directly unless I ask for it after reading.
+
 ## Testing and cost
 
 - `make test`: fast, offline and free. Modal tests are excluded by default (`-m 'not modal'`).
