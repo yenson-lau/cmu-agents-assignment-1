@@ -44,6 +44,14 @@ class SendMessageArgs(BaseModel):
     summary: str
 
 
+class InvokeSkillArgs(BaseModel):
+    """Arguments of the `invoke_skill` tool, mirroring `INVOKE_SKILL_TOOL`'s schema."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
 class CodeAgent(Agent):
     """An agent that fixes a software issue and submits a git patch."""
 
@@ -79,13 +87,10 @@ class CodeAgent(Agent):
 
         self.tools += [EXECUTE_TOOL, SEND_MESSAGE_TOOL]
 
-        # TODO(1.1.b): Construct the system prompt and task_prompt. These
+        # (1.1.b): Construct the system prompt and task_prompt. These
         # should be usable by the `Agent.build_prompt` method.
-        self.system_prompt = ""
-
-        self.task_prompt = ""
-
-        # FOLLOW UP: A strong system prompt for this assignment is around 10–15
+        #
+        # NOTE: A strong system prompt for this assignment is around 10–15
         # lines: role and /testbed, the workflow, "one tool call per step, read
         # output first," "keep working until verified, then call send_message,"
         # and the system-info block.
@@ -98,15 +103,41 @@ class CodeAgent(Agent):
         }
 
         self.system_prompt = dedent("""
+            You are a coding agent operating within a repository in the following code sandbox:
+
             <system_information>
             {system_info}
             </system_information>
-        """).format(system_info=json.dumps(system_info, indent=2))
+
+            The repository is a git repo with a single base commit checked out at `/testbed`, your working directory.
+
+            Solve the task provided by the user by repeatedly working and making tool calls until you can verify the fix. Once you are done, call the `send_message` tool to submit a summary of your work.
+
+            Some tips:
+            - General workflow: Explore the relevant code, reproduce the failure, make the fix, then rerun the reproduction and existing tests to confirm the fix.
+            - Note that no one will answer questions; act autonomously and keep using tools until the task is done.
+            - Avoid interactive or never-ending commands (editors, pagers, servers in the foreground), and edit files with shell tools such as `sed`, `cat <<'EOF'` or `python -c`.
+            - Use `git status` / `git diff` to review your changes
+        """).strip().format(system_info=json.dumps(system_info, indent=2))
+
+        # (1.4): If any skills are available to the agent, make their
+        # descriptions/metadata available to the agent in the prompt.
+
+        if (skills := self.skills):
+            skill_catalog = "\n\n".join(
+                f"<skill>\n{skill['metadata']}\n</skill>"
+                for skill in skills.values()
+            )
+
+            self.system_prompt += "\n\n" + dedent("""
+                You should also consult the following skills whenever necessary, by calling the `invoke_skill` tool:
+
+                <available_skills>
+                {skills_catalog}
+                </available_skills>
+            """).strip().format(skills_catalog=skill_catalog)
 
         self.task_prompt = task
-
-        # TODO(1.4): If any skills are available to the agent, make their
-        # descriptions/metadata available to the agent in the prompt.
 
     def _env_execute(self, args: Any) -> str:
         parsed = ExecuteArgs.model_validate(args)
@@ -118,6 +149,27 @@ class CodeAgent(Agent):
         parsed = SendMessageArgs.model_validate(args)
         self.finished = True
         return f"Loop finished. Summary: {parsed.summary}"
+
+    # (1.4) cont.: Add the `invoke_skill` tool to the agent. All it does is send the content to the agent as a tool result.
+    def _invoke_skill(self, args: Any) -> str:
+        parsed = InvokeSkillArgs.model_validate(args)
+        name = parsed.name
+
+        if not (skill := self.skills.get(name)):
+            return (
+                f"Unknown skill '{name}'."
+                f" Available skills: {list(self.skills.keys())}"
+            )
+
+        skill_content = dedent("""
+            Content of skill {name} returned by `invoke_skill`:
+
+            <skill_content>
+            {content}
+            </skill_content>
+        """).strip().format(name=name, content=skill["content"])
+
+        return skill_content
 
     def execute_tool_calls(
         self, tool_calls: list[dict[str, Any]]
@@ -164,6 +216,7 @@ class CodeAgent(Agent):
             handler = {
                 "execute": self._env_execute,
                 "send_message": self._send_message,
+                "invoke_skill": self._invoke_skill,
             }[tool_name]
             try:
                 result = handler(parsed_args)

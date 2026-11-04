@@ -16,6 +16,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
+import yaml
 
 from assignment.env import Environment
 from assignment.agent.tools import INVOKE_SKILL_TOOL
@@ -161,7 +162,7 @@ class Agent:
     def load_skills(self, skills_path: Path) -> dict[str, dict[str, str]]:
         """Load the skill folders exposed to this agent."""
 
-        # TODO(1.4): Validate ``skills_path``, discover one ``SKILL.md``
+        # (1.4): Validate ``skills_path``, discover one ``SKILL.md``
         # per child directory, parse its YAML frontmatter (what's between the
         # `---` tags at the head of the file), and return a mapping
         # keyed by the frontmatter ``name``. Each value must contain a concise
@@ -169,7 +170,86 @@ class Agent:
         # ``content`` of the skill file for ``invoke_skill``. Reject duplicate
         # names and malformed or missing frontmatter with a clear
         # ``ValueError``.
-        raise NotImplementedError
+
+        if not skills_path.exists():
+            raise FileNotFoundError(f"skills_path does not exist: {skills_path}")
+        if not skills_path.is_dir():
+            raise NotADirectoryError(f"skills_path is not a directory: {skills_path}")
+
+        skills: dict[str, dict[str, str]] = {}
+        for skill_path in sorted(skills_path.iterdir()):
+            # Load SKILL.md
+            if not skill_path.is_dir():
+                continue
+
+            skill_md_path = skill_path / "SKILL.md"
+            if not skill_md_path.exists():
+                raise FileNotFoundError(f"skill {skill_path} has no SKILL.md file")
+
+            # Parse YAML frontmatter
+            with skill_md_path.open() as f:
+                skill_md_text = f.read().strip()
+
+            if not (
+                skill_md_text.startswith("---\n") and
+                (frontmatter_end := skill_md_text.find("\n---")) > 4
+            ):
+                raise ValueError(f"skill {skill_path} has no YAML frontmatter")
+
+            frontmatter_str = skill_md_text[4:frontmatter_end].strip()
+            try:
+                frontmatter = yaml.safe_load(frontmatter_str)
+            except yaml.YAMLError as exc:
+                raise ValueError(
+                    f"skill {skill_path} has malformed YAML frontmatter: {exc}"
+                ) from exc
+
+            if not isinstance(frontmatter, dict):
+                raise ValueError(
+                    f"skill {skill_path} frontmatter is not mapping"
+                )
+
+            # Check frontmatter name
+            if not (skill_name := frontmatter.get("name")):
+                raise ValueError(
+                    f"frontmatter for skill {skill_path} requires a name"
+                )
+
+            if not (
+                isinstance(skill_name, str) and
+                (skill_name := skill_name.strip())
+            ):
+                raise ValueError(
+                    f"name for skill {skill_path} must be a non-empty string"
+                )
+
+            if skill_name != skill_path.name:
+                raise ValueError(
+                    f"frontmatter name {skill_name} must match the skill directory"
+                    f" name {skill_path.name}"
+                )
+
+            # Check frontmatter description
+            if not (description := frontmatter.get("description")):
+                raise ValueError(
+                    f"frontmatter for skill {skill_path} requires a description"
+                )
+
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(
+                    f"description for skill {skill_path} must be a non-empty string"
+                )
+
+            # Check for duplicate names
+            if skill_name in skills:
+                raise ValueError(f"duplicate skill name: {skill_name}")
+            else:
+                skills[skill_name] = {
+                    "metadata": frontmatter_str,
+                    "content": skill_md_text,
+                }
+
+        return skills
 
     def query_language_model(self) -> dict[str, Any]:
         """Send one tool-enabled Chat Completions request and normalize it."""
