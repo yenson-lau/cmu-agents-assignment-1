@@ -12,6 +12,7 @@ import logging
 import math
 import os
 from pathlib import Path
+from textwrap import dedent
 from typing import Any
 
 from dotenv import load_dotenv
@@ -28,10 +29,31 @@ DEFAULT_COMPACTION_KEEP_RECENT_STEPS = 1
 DEFAULT_COMPACTION_MAX_TOKENS = 1_200
 MAX_OBSERVATION_CHARS = 10_000
 
-# TODO(Part 2): Write instructions that make the model produce concise working
+# (2.1): Write instructions that make the model produce concise working
 # memory for a software agent. The prompt should preserve concrete progress,
 # failures, test results, constraints, and next steps without copying raw output.
-COMPACTION_SYSTEM_PROMPT = ""
+COMPACTION_SYSTEM_PROMPT = dedent("""
+    Compact the following progress made to solve the <task> in the <agent_history>
+    into a condensed summary: retain a concise factual working memory and preserve
+    the objective, constraints, files, commands, edits, concrete results, failed
+    approaches, tests, blockers, and outstanding work that remains as of the end of
+    the history. Summarize tool output rather than copying it verbatim. Return the
+    body of the summary only.
+""").strip().replace("\n", " ")
+
+COMPACTION_USER_PROMPT = dedent("""
+    Write the summary based on the following:
+
+    <task>
+    {task}
+    </task>
+
+    <agent_history>
+    {agent_history}
+    </agent_history>
+""").strip().replace("\n", " ")
+
+COMPACTION_HISTORY_FIELDS = ("role", "content", "tool_calls", "tool_call_id")
 
 
 class StepLimitError(Exception):
@@ -342,11 +364,23 @@ class Agent:
 
         return self.compact_threshold_tokens is not None
 
-    def compact_context(self):
+    @property
+    def compaction_retain_recent_messages(self) -> int:
+        """Number of recent messages to retain in the compacted context."""
+
+        counter = 0
+        for i, message in enumerate(reversed(self.history), 1):
+            if message["role"] == "assistant":
+                counter += 1
+            if counter >= self.compaction_keep_recent_steps:
+                break
+        return i
+
+    def compact_context(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Replace parts of prompt with model-generated working memory. Changes the
         content that `build_prompt` emits."""
 
-        # TODO(2.1): Prompt the model to compact the context. The system
+        # (2.1): Prompt the model to compact the context. The system
         # prompt should ask for concise factual working memory and preserve
         # the objective, constraints, files, commands, edits, concrete
         # results, failed approaches, tests, blockers, and next action.
@@ -355,9 +389,19 @@ class Agent:
         # with all linked tool observations. The resulting summary should change
         # what `build_prompt` emits, and reduce the length of the prompt.
 
-        raise NotImplementedError
-
-        compaction_prompt = []
+        n_retained = self.compaction_retain_recent_messages
+        stripped_history = [
+            {k: m[k] for k in COMPACTION_HISTORY_FIELDS if k in m}
+            for m in self.history[:-n_retained]
+        ]
+        compaction_context = COMPACTION_USER_PROMPT.format(
+            task=self.task_prompt,
+            agent_history=json.dumps(stripped_history, ensure_ascii=False),
+        )
+        compaction_prompt = [
+            {"role": "system", "content": COMPACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": compaction_context},
+        ]
 
         ### Do not modify this section ###
         compaction_response = self.client.chat.completions.create(
@@ -370,6 +414,21 @@ class Agent:
 
         # Use `compaction_response` to update what `build_prompt` emits, but
         # DO NOT modify the object itself. Let the method return it unchanged.
+
+        if not (summary := compaction_response.choices[0].message.content):
+            raise ValueError("Compaction failed: empty response.")
+
+        compacted_prompt = dedent("""
+            Here is a compact summary of the progress you have made thus far:
+
+            <summary>
+            {summary}
+            </summary>
+        """).strip().format(summary=summary)
+
+        self.history = [
+            {"role": "user", "content": compacted_prompt},
+        ] + self.history[-n_retained:]
 
         ### Do not modify this section ###
         return compaction_prompt, compaction_response.model_dump(mode="json")
@@ -413,17 +472,22 @@ class Agent:
         """Run ReAct steps, always saving the trajectory and stopping Modal."""
 
         try:
-            # TODO(1.2) Run the ReAct loop. Orchestrate the sequence of
+            # (1.2) Run the ReAct loop. Orchestrate the sequence of
             # prompting the language model to produce reasoning and actions,
             # extracting the tool calls produced by the model, and executing
             # the tool calls to obtain the agent's observation for the next
             # step. Ensure you identify when the agent has completed the task
             # by setting `Agent.finished`. If the agent exceeds the
             # `step_limit`, raise `StepLimitError`.
-
             while not self.finished:
                 if self.steps_taken >= self.step_limit:
                     raise StepLimitError
+
+                # (2.2) Call `maybe_compact_context()` before each new action
+                # request in your shared loop. It already estimates active tokens
+                # and handles the threshold, and tracks compaction events for
+                # logging.
+                self.maybe_compact_context()
 
                 message = self.query_language_model()
                 self.history.append(message)
@@ -439,11 +503,6 @@ class Agent:
                     self.history.append(
                         {"role": "user", "content": no_tool_call_prompt}
                     )
-
-            # TODO(2.2) Call `maybe_compact_context()` before each new action
-            # request in your shared loop. It already estimates active tokens
-            # and handles the threshold, and tracks compaction events for
-            # logging.
 
         finally:
             # This block is provided infrastructure. Do not modify it: a

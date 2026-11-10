@@ -33,6 +33,7 @@ make doctor   # checks submodules, Modal auth and the model endpoint without bil
 ## How to help me
 
 - When an implementation depends on a public API or another transferable specification (e.g. the OpenAI tool-calling format, the Agent Skills protocol, YAML frontmatter, UCI/FEN), point me to the source first. Cite public sources (official docs, specs, API references) before source code such as the installed SDK in `.venv`; use source code as a secondary reference, or when no public doc covers the point. Name the specific page or file and what to look for in it. Don't give the answer directly unless I ask for it after reading.
+- The TODO comments and ASSIGNMENT.md are often terse and assume background they don't explain. When a requirement is dense or ambiguous, first restate it in plain terms: what data is split or changed, where the result ends up, and why each constraint exists. Note where the real intent is only visible from a parameter name, a guard condition or a test, and cite that location.
 
 ## Testing and cost
 
