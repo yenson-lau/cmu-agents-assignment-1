@@ -130,13 +130,73 @@ INVOKE_SKILL_TOOL = {
     },
 }
 
-# TODO(3.1.a): Define an OpenAI function-tool schema named ``play_move``.
+# (3.1.a): Define an OpenAI function-tool schema named ``play_move``.
 # It must accept exactly one required string argument named ``move``, explain
 # that moves use UCI notation (for example e2e4), and reject extra arguments.
-PLAY_MOVE_TOOL: dict = {}
+PLAY_MOVE_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "play_move",
+        "description": (
+            "Play a chess move for the White player in the form of a UCI string, "
+            "e.g. 'e2e4', 'e7e8q', etc. Black then plays automatically. Returns the "
+            "resulting state after Black's reply (FEN, pieces, legal moves, "
+            "history, status, etc.), or an error if the move is illegal. Note that "
+            "you should only play one move per turn."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "move": {
+                    "type": "string",
+                    "description": "The move to play in UCI notation.",
+                },
+            },
+            "required": ["move"],
+            "additionalProperties": False,
+        },
+    },
+}
 
-# TODO(3.3): Define the `simulate_move` tool, like the `play_move` tool.
-SIMULATE_MOVE_TOOL: dict = {}
+# (3.3): Define the `simulate_move` tool, like the `play_move` tool.
+SIMULATE_MOVE_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "simulate_move",
+        "description": (
+            "Return the state of the game, its pieces, legal moves, etc. for a "
+            "given FEN state and an optional move (for whichever side ought to move "
+            "next given the FEN, Black or White) in UCI notation. "
+            "This tool is for bookkeeping; it does NOT change the state of the live "
+            "game. Returns the new fen, legal_moves, turn and game_over / status, "
+            "so results can be chained into the next call."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fen": {
+                    "type": "string",
+                    "description": (
+                        "The FEN state to simulate the game state for. A complete "
+                        "six-field FEN is required."
+                    ),
+                },
+                "move": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "The move to simulate in UCI notation. Set to null to "
+                        "inspect the FEN position and list its legal moves without "
+                        "simulating additional moves."
+                    ),
+                },
+            },
+            "required": ["fen", "move"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 # TODO()
 RUN_PYTHON_TOOL: dict = {}

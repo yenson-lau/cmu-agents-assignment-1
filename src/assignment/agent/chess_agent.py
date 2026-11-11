@@ -13,12 +13,13 @@ from assignment.agent.base import (
     Agent,
 )
 from assignment.agent.chess_tools import (
+    _chess_error_message,
     _game_state,
     _invoke_skill,
     _play_move,
-    CHESS_PORT,
     _run_python,
     _simulate_move,
+    CHESS_PORT,
 )
 from assignment.agent.tools import (
     INVOKE_SKILL_TOOL,
@@ -106,9 +107,11 @@ class ChessAgent(Agent):
             compaction_max_tokens=compaction_max_tokens,
         )
 
-        # TODO(Part 3): Register the play_move tool schema from tools.py.
+        # (Part 3): Register the play_move tool schema from tools.py.
+        self.tools.append(PLAY_MOVE_TOOL)
 
         if programmatic_tools:
+            self.tools.append(SIMULATE_MOVE_TOOL)
             self.tools.append(RUN_PYTHON_TOOL)
 
         # run_python always executes in the sandbox, on the port the chess
@@ -163,7 +166,7 @@ class ChessAgent(Agent):
     ) -> list[dict[str, str]]:
         """Execute model-generated ``play_move`` calls against the chess API."""
 
-        # TODO(Part 3.1):
+        # (Part 3.1):
         # 1. Dispatch on the function name, and ignore a tool this agent did
         #    not register.
         # 2. Hand the raw arguments to the matching chess_tools helper, with
@@ -177,4 +180,83 @@ class ChessAgent(Agent):
 
         # TODO(Part 3.3-4): add cases for simulate_move and run_python, with
         # linked observations and recoverable errors, just like the old tool.
-        raise NotImplementedError
+
+        messages: list[dict[str, Any]] = []
+        moves_played: bool = False
+
+        def _add_message(_id: str, text: str):
+            messages.append({"role": "tool", "tool_call_id": _id, "content": text})
+
+        def _play_move_handler(args: str):
+            nonlocal moves_played
+            if moves_played:
+                return _chess_error_message("Only one move allowed per turn.")
+            return _play_move(self.chess_client, args)
+
+        for tool_call in tool_calls:
+            # potential malformed responses
+            _id = "unknown"
+            try:
+                _id = tool_call["id"]
+                assert tool_call["type"] == "function"
+                function = tool_call["function"]
+                tool_name = function["name"]
+                arguments = function.get("arguments")
+            except (KeyError, TypeError, AssertionError):
+                _add_message(
+                    _id,
+                    _chess_error_message(f"Malformed tool call: {tool_call}")
+                )
+                continue
+
+            # assert tool is recognized
+            if tool_name not in self.tool_names:
+                _add_message(
+                    _id,
+                    _chess_error_message(f"Unknown tool: {tool_name}")
+                )
+                continue
+
+            # execute tool; invalid arguments (wrong shape, types, or extra
+            # fields) are reported back for the model to correct
+            try:
+                handler = {
+                    "play_move": _play_move_handler,
+                    "simulate_move": lambda args: _simulate_move(self.chess_client, args),
+                }[tool_name]
+            except KeyError:
+                _add_message(
+                    _id,
+                    _chess_error_message(f"Unhandled tool: {tool_name}")
+                )
+                continue
+            response = handler(arguments)
+
+            if response.startswith('<chess_error>'):
+                _add_message(_id, response)
+                continue
+
+            elif tool_name == "play_move":
+                state = json.loads(response)
+                moves_played = True  # successful move parsed
+                _add_message(
+                    _id,
+                    "Move played successfully:\n\n" + self.format_state(state)
+                )
+                self.last_state = state
+                self.finished = bool(self.last_state.get("game_over"))
+
+            elif tool_name == "simulate_move":
+                _add_message(
+                    _id,
+                    "Simulation result (live game unchanged):\n\n" + response
+                )
+
+            else:
+                _add_message(
+                    _id,
+                    f"Unhandled response for successful `{tool_name}` call: "
+                    f"{response}"
+                )
+
+        return messages

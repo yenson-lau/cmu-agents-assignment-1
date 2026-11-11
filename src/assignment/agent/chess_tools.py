@@ -45,14 +45,56 @@ def _simulate_move(client: httpx.Client, arguments: str) -> str:
     to send back, so a bad argument or a server error reaches the model as a
     recoverable ``<chess_error>`` instead of ending the run.
     """
-    # TODO(Part 3.3.b): Parse the arguments, call the provided
+    # (Part 3.3.b): Parse the arguments, call the provided
     # /api/simulate endpoint with fen and optional move, and return its JSON.
     # Catch any errors raised by the tool and return an error message between
     # `<chess_error></chess_error>` for the agent to address. Cover malformed
     # JSON arguments, arguments that are not an object, a missing or
     # non-string fen, a non-string move, a position or move the server rejects,
     # and a transport failure.
-    raise NotImplementedError
+
+    # Parsing
+    try:
+        parsed = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError) as exc:
+        return _chess_error_message(f"Malformed JSON arguments: {exc}")
+
+    if not isinstance(parsed, dict):
+        return _chess_error_message("Arguments must be a JSON object.")
+
+    if not isinstance(fen := parsed.get("fen"), str):
+        return _chess_error_message("Arguments must contain `fen` (str).")
+
+    if not (isinstance(move := parsed.get("move", False), str) or (move is None)):
+        return _chess_error_message("Arguments must contain `move` (str | null).")
+
+    if len(parsed) > 2:
+        return _chess_error_message(
+            "Arguments must consist only of `fen` and `move` values."
+        )
+
+    # Request
+    try:
+        payload = _request_state(
+            client,
+            method="POST",
+            endpoint="/api/simulate",
+            json={"fen": fen, "move": move},
+        )
+    except ValueError as exc:
+        # The server rejects the FEN or move: illegal (400) or failed validation (422).
+        return _chess_error_message(f"Simulation rejected: {exc}")
+    except RuntimeError as exc:
+        # The server answered, but not with a JSON object.
+        return _chess_error_message(str(exc))
+    except httpx.HTTPError as exc:
+        return _chess_error_message(f"Could not reach the chess server: {exc}")
+
+    return json.dumps(payload)
+
+
+def _chess_error_message(message: str) -> str:
+    return f"<chess_error>{message}</chess_error>"
 
 
 def _play_move(client: httpx.Client, arguments: str) -> str:
@@ -61,13 +103,46 @@ def _play_move(client: httpx.Client, arguments: str) -> str:
     Takes the raw JSON arguments of one tool call. Returns the new state, or a
     `<chess_error>` observation if the move could not be played.
     """
-    # TODO(3.1.b): Parse the arguments and POST {"move": <uci move>} to
+    # (3.1.b): Parse the arguments and POST {"move": <uci move>} to
     # /api/move. Return its JSON object. Catch any errors raised by the
     # tool and return an error message between `<chess_error></chess_error>`
     # for the agent to address. Cover malformed JSON arguments, arguments
-    # that are not an object, a missing or non-string fen, a non-string move,
-    # a position or move the server rejects, and a transport failure.
-    raise NotImplementedError
+    # that are not an object, a non-string move, a position or move the server
+    # rejects, and a transport failure.
+
+    # Parsing
+    try:
+        parsed = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError) as exc:
+        return _chess_error_message(f"Malformed JSON arguments: {exc}")
+
+    if not isinstance(parsed, dict):
+        return _chess_error_message("Arguments must be a JSON object.")
+
+    if not isinstance(move := parsed.get("move"), str):
+        return _chess_error_message("Arguments must contain a UCI string `move`.")
+
+    if len(parsed) > 1:
+        return _chess_error_message("Arguments must contain a single `move` value.")
+
+    # Request
+    try:
+        payload = _request_state(
+            client,
+            method="POST",
+            endpoint="/api/move",
+            json={"move": move},
+        )
+    except ValueError as exc:
+        # The server rejected the move: illegal (400) or failed validation (422).
+        return _chess_error_message(f"Move rejected: {exc}")
+    except RuntimeError as exc:
+        # The server answered, but not with a JSON object.
+        return _chess_error_message(str(exc))
+    except httpx.HTTPError as exc:
+        return _chess_error_message(f"Could not reach the chess server: {exc}")
+
+    return json.dumps(payload)
 
 
 def _run_python(env: Any, port: int, arguments: str) -> str:
