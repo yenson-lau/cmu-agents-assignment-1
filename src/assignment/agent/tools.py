@@ -198,5 +198,32 @@ SIMULATE_MOVE_TOOL: dict = {
     },
 }
 
-# TODO()
-RUN_PYTHON_TOOL: dict = {}
+# (3.4)
+RUN_PYTHON_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "run_python",
+        "description": (
+            "Run a Python code snippet in a sandbox. The runner captures and "
+            "returns printed output only (stdout, stderr). Each call executes in a "
+            "fresh Python process.\n"
+            "\n"
+            "The sandbox makes simulate_move(fen, move) and play_move(move) as "
+            "ordinary synchronous Python functions (see the corresponding tool call "
+            "schemas). Note that play_move should still not be executed more than "
+            "once per turn, across all tool calls."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "A Python code snippet.",
+                },
+            },
+            "required": ["code"],
+            "additionalProperties": False,
+        },
+    },
+}

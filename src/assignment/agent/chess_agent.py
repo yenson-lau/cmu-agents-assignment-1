@@ -7,11 +7,7 @@ from typing import Any
 
 import httpx
 
-from assignment.agent.base import (
-    DEFAULT_COMPACTION_KEEP_RECENT_STEPS,
-    DEFAULT_COMPACTION_MAX_TOKENS,
-    Agent,
-)
+from assignment.agent.base import Agent
 from assignment.agent.chess_tools import (
     _chess_error_message,
     _game_state,
@@ -22,7 +18,6 @@ from assignment.agent.chess_tools import (
     CHESS_PORT,
 )
 from assignment.agent.tools import (
-    INVOKE_SKILL_TOOL,
     PLAY_MOVE_TOOL,
     RUN_PYTHON_TOOL,
     SIMULATE_MOVE_TOOL,
@@ -178,7 +173,7 @@ class ChessAgent(Agent):
         # 5. Turn malformed, unknown, rejected, or extra parallel calls into
         #    recoverable <chess_error> observations instead of crashing.
 
-        # TODO(Part 3.3-4): add cases for simulate_move and run_python, with
+        # (Part 3.3-4): add cases for simulate_move and run_python, with
         # linked observations and recoverable errors, just like the old tool.
 
         messages: list[dict[str, Any]] = []
@@ -194,7 +189,7 @@ class ChessAgent(Agent):
             return _play_move(self.chess_client, args)
 
         for tool_call in tool_calls:
-            # potential malformed responses
+            # 1) Potential malformed responses
             _id = "unknown"
             try:
                 _id = tool_call["id"]
@@ -209,7 +204,7 @@ class ChessAgent(Agent):
                 )
                 continue
 
-            # assert tool is recognized
+            # 2) Assert tool is recognized
             if tool_name not in self.tool_names:
                 _add_message(
                     _id,
@@ -217,12 +212,14 @@ class ChessAgent(Agent):
                 )
                 continue
 
-            # execute tool; invalid arguments (wrong shape, types, or extra
+            # 3) Execute tool; invalid arguments (wrong shape, types, or extra
             # fields) are reported back for the model to correct
             try:
                 handler = {
                     "play_move": _play_move_handler,
                     "simulate_move": lambda args: _simulate_move(self.chess_client, args),
+                    "run_python": lambda args: _run_python(self.env, self.python_sandbox_port, args),
+                    "invoke_skill": lambda args: _invoke_skill(self.skills, args),
                 }[tool_name]
             except KeyError:
                 _add_message(
@@ -232,31 +229,85 @@ class ChessAgent(Agent):
                 continue
             response = handler(arguments)
 
-            if response.startswith('<chess_error>'):
-                _add_message(_id, response)
-                continue
+            # 4) Handle response
+            # 4a) run_python: This needs to come first because you can make
+            #   legitimate moves, then cause an error after.
+            if tool_name == "run_python":
+                # 4a1) turn accounting
+                # get state: intentionally not handling httpx.HTTPError or ValueError
+                #   and letting the agent crash instead
+                state = _game_state(self.chess_client)
 
+                n_last = len(self.last_state.get("history", []))
+                new_history = state.get("history", [])[n_last:]
+
+                state_changed = len(new_history) > 0
+                white_moves = [t["uci"] for t in new_history if t["color"] == "white"]
+                turns_played = len(white_moves)
+
+                # 4a2) message
+                infos = []
+                if state_changed:
+                    infos.append("- The game state has been changed.")
+                if turns_played and moves_played:
+                    infos.append(
+                        "- Warning: A move has already been played this turn, but"
+                        f" this snippet played {turns_played} White move(s) "
+                        f"({', '.join(white_moves)}). They cannot be undone. The "
+                        "new state is shown below."
+                    )
+                elif turns_played > 1:
+                    infos.append(
+                        f"- Warning: This snippet played {turns_played} White moves "
+                        f"({', '.join(white_moves)}); only one is allowed per turn. "
+                        "They cannot be undone. The new state is shown below."
+                    )
+                info = "\n" + "\n".join(infos) if infos else ""
+
+                if response.startswith('<chess_error>'):
+                    msg = response + info
+                else:
+                    msg = (
+                        "Python code executed." + info
+                        + "\n\n"
+                        + "<python_result>\n"
+                        + response + "\n"
+                        + "</python_result>"
+                    )
+                msg += "\n\n" + self.format_state(state)
+
+                # 4a3) state updates
+                self.last_state = state
+                if state_changed:
+                    moves_played |= bool(turns_played)
+                    self.finished = bool(state.get("game_over"))
+
+            # 4b) chess_error: all chess_errors except for run_python can be handled
+            #   the same way
+            elif response.startswith('<chess_error>'):
+                msg = response
+
+            # 4c) play_move
             elif tool_name == "play_move":
                 state = json.loads(response)
                 moves_played = True  # successful move parsed
-                _add_message(
-                    _id,
-                    "Move played successfully:\n\n" + self.format_state(state)
-                )
+                msg = "Move played successfully:\n\n" + self.format_state(state)
                 self.last_state = state
                 self.finished = bool(self.last_state.get("game_over"))
 
+            # 4d) simulate_move
             elif tool_name == "simulate_move":
-                _add_message(
-                    _id,
-                    "Simulation result (live game unchanged):\n\n" + response
-                )
+                msg = "Simulation result (live game unchanged):\n\n" + response
 
+            # 4e) invoke_skill
+            elif tool_name == "invoke_skill":
+                msg = response
+
+            # 4f) unhandled
             else:
-                _add_message(
-                    _id,
-                    f"Unhandled response for successful `{tool_name}` call: "
-                    f"{response}"
-                )
+                raise ValueError(f"Unhandled tool: {tool_name}")
+
+            # 4g) finalize the tool message
+            _add_message(_id, msg)
 
         return messages
